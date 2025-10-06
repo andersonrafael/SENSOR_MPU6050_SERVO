@@ -38,7 +38,7 @@ Este projeto implementa um sistema de controle de servo motor baseado na inclina
 
 ### Servo Motor SG90
 - **Sinal**: GPIO 2
-- **VCC**: 5V
+- **VCC**: 3.3V
 - **GND**: GND
 
 ### Display OLED SSD1306 (I2C1)
@@ -70,25 +70,10 @@ MPU6050-e-servo/
 │           └── font.h         # Fontes para o display
 ```
 
-## Como Usar
-
-### 1. Compilação
-```bash
-mkdir build
-cd build
-cmake ..
-make
-```
 
 ### 2. Upload para o Pico
 ```bash
 cp u3-i4-mpu6050.uf2 /media/[USER]/RPI-RP2/
-```
-
-### 3. Monitoramento
-Conecte o Pico via USB e abra o monitor serial:
-```bash
-minicom -D /dev/ttyACM0 -b 115200
 ```
 
 ## Funcionamento do Programa
@@ -130,12 +115,12 @@ minicom -D /dev/ttyACM0 -b 115200
 
 ### Monitor Serial
 ```
-AX: 1234 | AY: -567 | AZ: 8901 | Angulo: 15.23 | Servo: 105
+A-X: 1234 | A-Y: -567 | A-Z: 8901 | POS.ANG.: 15.23°| POS.SERVO: 105
 ```
 
 ### Display OLED
 - **Linha 1**: Ângulo atual (ex: "Ang.:15.2")
-- **Linha 2**: "ALERTA!" (quando aplicável)
+- **Linha 2**: "ALERT!" (quando aplicável)
 
 ## Aplicações
 
