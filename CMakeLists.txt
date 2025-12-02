@@ -69,3 +69,5 @@ target_include_directories(u3-i4-mpu6050 PRIVATE
 )
 
 pico_add_extra_outputs(u3-i4-mpu6050)
+
+
