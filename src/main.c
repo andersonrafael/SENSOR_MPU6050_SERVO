@@ -4,8 +4,8 @@
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/gpio.h"
-#include "hardware/pio.h"    // Necessário para NeoPixel
-#include "hardware/clocks.h" // Necessário para clock do PIO
+#include "hardware/pio.h"
+#include "hardware/clocks.h"
 
 // Importa o programa PIO compilado (gerado pelo CMake)
 #include "ws2812.pio.h"
@@ -20,9 +20,9 @@
 #define BUZZER_PIN 21
 
 // --- CONFIGURAÇÃO NEOPIXEL BITDOGLAB ---
-#define NEOPIXEL_PIN 7 // Pino de dados dos LEDs (BitDogLab padrão)
-#define NUM_PIXELS 25  // Matriz 5x5
-#define IS_RGBW false  // WS2812 padrão é RGB apenas
+#define NEOPIXEL_PIN 7
+#define NUM_PIXELS 25
+#define IS_RGBW false
 
 // --- Constantes para controle ---
 #define MOVEMENT_THRESHOLD 300
@@ -31,8 +31,6 @@
 // --- Variáveis de estado ---
 static uint64_t last_movement_time = 0;
 static int16_t last_ax = 0, last_ay = 0, last_az = 0;
-
-// Variáveis para controle de tempo do LED
 static uint64_t last_led_toggle_time = 0;
 static bool led_on_state = false;
 
@@ -69,7 +67,6 @@ static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b)
 void set_neopixel_color(uint8_t r, uint8_t g, uint8_t b)
 {
     uint32_t color = urgb_u32(r, g, b);
-    // Define a cor para TODOS os LEDs da matriz para garantir visibilidade
     for (int i = 0; i < NUM_PIXELS; i++)
     {
         put_pixel(color);
@@ -84,36 +81,23 @@ void leds_init_neopixel(void)
     ws2812_program_init(pio, sm, offset, NEOPIXEL_PIN, 800000, IS_RGBW);
 }
 
-// --- Lógica de Controle dos LEDs ---
-/**
- * @brief Controla o NeoPixel baseado nos requisitos:
- * - Normal: Verde Aceso (Sólido)
- * - Movimento: Amarelo Piscando (1s total: 500ms on, 500ms off)
- * - Alerta: Vermelho Piscando (0.5s total: 250ms on, 250ms off)
- */
 void update_neopixel_state(bool alarm, bool movement, bool stable, uint64_t current_time)
 {
-
-    // Configurações de intervalo
     uint32_t interval_ms = 0;
 
     if (alarm)
     {
-        // Alerta: Pisca a cada meio segundo (250ms on / 250ms off)
         interval_ms = 250;
     }
     else if (movement && !stable)
     {
-        // Movimento: Pisca a cada 1 segundo (500ms on / 500ms off)
         interval_ms = 500;
     }
     else
     {
-        // Estável: Sólido, sem piscar
         interval_ms = 0;
     }
 
-    // Lógica de Piscagem
     if (interval_ms > 0)
     {
         if (current_time - last_led_toggle_time >= interval_ms)
@@ -124,21 +108,18 @@ void update_neopixel_state(bool alarm, bool movement, bool stable, uint64_t curr
     }
     else
     {
-        led_on_state = true; // Sempre aceso se for estável
+        led_on_state = true;
     }
 
-    // Aplicação das Cores (R, G, B)
     if (alarm)
     {
-        // Vermelho Piscando
         if (led_on_state)
-            set_neopixel_color(100, 0, 0); // Brilho 100/255
+            set_neopixel_color(100, 0, 0);
         else
             set_neopixel_color(0, 0, 0);
     }
     else if (movement && !stable)
     {
-        // Amarelo Piscando (Amarelo = Vermelho + Verde)
         if (led_on_state)
             set_neopixel_color(80, 80, 0);
         else
@@ -146,12 +127,10 @@ void update_neopixel_state(bool alarm, bool movement, bool stable, uint64_t curr
     }
     else
     {
-        // Normal (Estável): Verde Aceso Sólido
         set_neopixel_color(0, 100, 0);
     }
 }
 
-// --- Funções Auxiliares (Display/Sensor) ---
 bool check_movement(int16_t ax, int16_t ay, int16_t az)
 {
     int16_t delta_x = abs(ax - last_ax);
@@ -187,16 +166,40 @@ void update_display_state(float angle, bool alarm, bool stable, bool movement)
 
 int main()
 {
+    // Tente inicializar o USB antes de qualquer coisa
     stdio_init_all();
+
+    // Aguarde um pouco para o terminal serial reconhecer a conexão
+    for (int i = 0; i < 10; i++)
+    {
+        printf("Aguardando inicializacao USB... %d\n", i);
+        sleep_ms(100);
+    }
+
+    printf("\n\n=== Sistema BitDogLab - Monitor NeoPixel ===\n");
+    printf("Inicializando...\n");
+
+    // Aguarde mais tempo para garantir que o terminal está conectado
     sleep_ms(2000);
 
-    printf("\n=== Sistema BitDogLab - Monitor NeoPixel ===\n");
-
+    // Inicialize os periféricos
+    printf("Inicializando MPU6050...\n");
     mpu6050_init();
+
+    printf("Inicializando servo...\n");
     servo_init();
+
+    printf("Inicializando display...\n");
     display_init();
-    leds_init_neopixel(); // Inicializa o PIO para NeoPixel
+
+    printf("Inicializando NeoPixel...\n");
+    leds_init_neopixel();
+
+    printf("Inicializando buzzer...\n");
     pwm_init_buzzer(BUZZER_PIN);
+
+    printf("Sistema inicializado com sucesso!\n");
+    printf("Aguardando dados do sensor...\n\n");
 
     int16_t ax, ay, az;
     float angle;
@@ -204,6 +207,9 @@ int main()
 
     mpu6050_read_raw(&last_ax, &last_ay, &last_az);
     last_movement_time = to_ms_since_boot(get_absolute_time());
+
+    uint64_t last_print_time = 0;
+    int print_count = 0;
 
     while (true)
     {
@@ -230,10 +236,10 @@ int main()
             angle_servo = SERVO_MAX_ANGLE;
         servo_set_angle(angle_servo);
 
-        // --- NOVA LÓGICA DE LEDS ---
+        // Controle dos LEDs
         update_neopixel_state(alarm_triggered, movement_detected, is_stable, current_time);
 
-        // Atualização do display e Log
+        // Atualização do display
         char main_buffer[32];
         snprintf(main_buffer, sizeof(main_buffer), "ANG: %.1f", angle);
         display_text(main_buffer, 0, 24, 2);
@@ -247,9 +253,17 @@ int main()
 
         show_display();
 
-        // Delay reduzido para garantir que a piscagem do LED seja fluida
-        // Como controlamos o tempo dentro da função update_neopixel_state,
-        // podemos rodar o loop um pouco mais rápido.
+        // Imprimir no terminal a cada 500ms
+        if (current_time - last_print_time > 500)
+        {
+            print_count++;
+            printf("[%d] A-X: %6d | A-Y: %6d | A-Z: %6d | Angulo: %7.2f° | Mov: %s | Alarme: %s\n",
+                   print_count, ax, ay, az, angle,
+                   movement_detected ? "SIM" : "NAO",
+                   alarm_triggered ? "SIM" : "NAO");
+            last_print_time = current_time;
+        }
+
         sleep_ms(50);
     }
 }
