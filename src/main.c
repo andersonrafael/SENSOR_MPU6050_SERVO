@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <math.h>
-#include <stdlib.h>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/gpio.h"
@@ -20,19 +19,16 @@
 #define BUZZER_PIN 21
 
 // --- CONFIGURAÇÃO NEOPIXEL BITDOGLAB ---
-#define NEOPIXEL_PIN 7
-#define NUM_PIXELS 25
-#define IS_RGBW false
+#define NEOPIXEL_PIN 7 // Pino de dados dos LEDs (BitDogLab padrão)
+#define NUM_PIXELS 25  // Matriz 5x5
+#define IS_RGBW false  // WS2812 padrão é RGB apenas
 
-// --- Constantes para controle ---
-#define MOVEMENT_THRESHOLD 300
-#define STABLE_TIME_MS 3000
+// --- BOTÕES BITDOGLAB ---
+#define BUTTON_A_PIN 5 // Botão A na BitDogLab
+#define BUTTON_B_PIN 6 // Botão B na BitDogLab
 
-// --- Variáveis de estado ---
-static uint64_t last_movement_time = 0;
-static int16_t last_ax = 0, last_ay = 0, last_az = 0;
-static uint64_t last_led_toggle_time = 0;
-static bool led_on_state = false;
+// --- Estado dos LEDs ---
+static bool leds_enabled = true; // Começa com LEDs ligados
 
 // --- Funções do Buzzer ---
 void pwm_init_buzzer(uint pin)
@@ -67,10 +63,17 @@ static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b)
 void set_neopixel_color(uint8_t r, uint8_t g, uint8_t b)
 {
     uint32_t color = urgb_u32(r, g, b);
+    // Define a cor para TODOS os LEDs da matriz
     for (int i = 0; i < NUM_PIXELS; i++)
     {
         put_pixel(color);
     }
+}
+
+void clear_neopixel(void)
+{
+    // Apaga todos os LEDs
+    set_neopixel_color(0, 0, 0);
 }
 
 void leds_init_neopixel(void)
@@ -81,189 +84,213 @@ void leds_init_neopixel(void)
     ws2812_program_init(pio, sm, offset, NEOPIXEL_PIN, 800000, IS_RGBW);
 }
 
-void update_neopixel_state(bool alarm, bool movement, bool stable, uint64_t current_time)
+// --- Funções para os botões ---
+void buttons_init(void)
 {
-    uint32_t interval_ms = 0;
+    // Configura botões como entrada com pull-up
+    gpio_init(BUTTON_A_PIN);
+    gpio_set_dir(BUTTON_A_PIN, GPIO_IN);
+    gpio_pull_up(BUTTON_A_PIN);
 
-    if (alarm)
-    {
-        interval_ms = 250;
-    }
-    else if (movement && !stable)
-    {
-        interval_ms = 500;
-    }
-    else
-    {
-        interval_ms = 0;
-    }
-
-    if (interval_ms > 0)
-    {
-        if (current_time - last_led_toggle_time >= interval_ms)
-        {
-            led_on_state = !led_on_state;
-            last_led_toggle_time = current_time;
-        }
-    }
-    else
-    {
-        led_on_state = true;
-    }
-
-    if (alarm)
-    {
-        if (led_on_state)
-            set_neopixel_color(100, 0, 0);
-        else
-            set_neopixel_color(0, 0, 0);
-    }
-    else if (movement && !stable)
-    {
-        if (led_on_state)
-            set_neopixel_color(80, 80, 0);
-        else
-            set_neopixel_color(0, 0, 0);
-    }
-    else
-    {
-        set_neopixel_color(0, 100, 0);
-    }
+    gpio_init(BUTTON_B_PIN);
+    gpio_set_dir(BUTTON_B_PIN, GPIO_IN);
+    gpio_pull_up(BUTTON_B_PIN);
 }
 
-bool check_movement(int16_t ax, int16_t ay, int16_t az)
+bool is_button_a_pressed(void)
 {
-    int16_t delta_x = abs(ax - last_ax);
-    int16_t delta_y = abs(ay - last_ay);
-    int16_t delta_z = abs(az - last_az);
-    return (delta_x > MOVEMENT_THRESHOLD) || (delta_y > MOVEMENT_THRESHOLD) || (delta_z > MOVEMENT_THRESHOLD);
+    // Botão pressionado = nível baixo (pull-up)
+    return !gpio_get(BUTTON_A_PIN);
 }
 
-void update_display_state(float angle, bool alarm, bool stable, bool movement)
+bool is_button_b_pressed(void)
 {
-    char state_buffer[32];
-    display_text_no_clear("                ", 0, 40, 1);
+    // Botão pressionado = nível baixo (pull-up)
+    return !gpio_get(BUTTON_B_PIN);
+}
 
-    if (alarm)
+// --- Detecção de borda dos botões ---
+typedef struct
+{
+    uint64_t last_press_time;
+    bool last_state;
+    bool debounced_state;
+} button_debounce_t;
+
+static button_debounce_t button_a_state = {0, false, false};
+static button_debounce_t button_b_state = {0, false, false};
+
+bool check_button_press(button_debounce_t *state, bool current_state)
+{
+    uint64_t current_time = to_ms_since_boot(get_absolute_time());
+
+    // Debounce de 50ms
+    if (current_state != state->last_state)
     {
-        snprintf(state_buffer, sizeof(state_buffer), "ALERTA! %.1f", angle);
-        display_text_no_clear(state_buffer, 0, 40, 1);
-        display_text_no_clear("*** PERIGO ***", 0, 50, 1);
+        state->last_state = current_state;
+        state->last_press_time = current_time;
     }
-    else if (movement)
+
+    // Detecta borda de descida (botão pressionado) com debounce
+    if (current_state && !state->debounced_state &&
+        (current_time - state->last_press_time > 50))
     {
-        snprintf(state_buffer, sizeof(state_buffer), "MOV: %.1f", angle);
-        display_text_no_clear(state_buffer, 0, 40, 1);
-        display_text_no_clear("Movimento Detectado", 0, 50, 1);
+        state->debounced_state = true;
+        return true;
+    }
+
+    // Atualiza estado debounced
+    if (!current_state && state->debounced_state)
+    {
+        state->debounced_state = false;
+    }
+
+    return false;
+}
+
+// --- Controle dos LEDs baseado no ângulo e alarme ---
+void update_leds_by_angle(float angle, bool alarm_triggered)
+{
+    if (!leds_enabled)
+    {
+        clear_neopixel();
+        return;
+    }
+
+    if (alarm_triggered)
+    {
+        // Vermelho para alarme
+        set_neopixel_color(255, 0, 0);
+    }
+    else if (fabs(angle) > 30.0f)
+    {
+        // Amarelo para ângulo moderado
+        set_neopixel_color(255, 150, 0);
     }
     else
     {
-        snprintf(state_buffer, sizeof(state_buffer), "ESTAVEL: %.1f", angle);
-        display_text_no_clear(state_buffer, 0, 40, 1);
-        display_text_no_clear("Sistema Normal", 0, 50, 1);
+        // Verde para ângulo normal
+        set_neopixel_color(0, 255, 0);
     }
 }
 
 int main()
 {
-    // Tente inicializar o USB antes de qualquer coisa
     stdio_init_all();
-
-    // Aguarde um pouco para o terminal serial reconhecer a conexão
-    for (int i = 0; i < 10; i++)
-    {
-        printf("Aguardando inicializacao USB... %d\n", i);
-        sleep_ms(100);
-    }
-
-    printf("\n\n=== Sistema BitDogLab - Monitor NeoPixel ===\n");
-    printf("Inicializando...\n");
-
-    // Aguarde mais tempo para garantir que o terminal está conectado
     sleep_ms(2000);
 
-    // Inicialize os periféricos
-    printf("Inicializando MPU6050...\n");
+    printf("\n=== Sistema BitDogLab - Controle NeoPixel com Botões ===\n");
+    printf("Botão A: Desliga LEDs\n");
+    printf("Botão B: Liga LEDs\n\n");
+
+    // Inicializações
     mpu6050_init();
-
-    printf("Inicializando servo...\n");
     servo_init();
-
-    printf("Inicializando display...\n");
     display_init();
-
-    printf("Inicializando NeoPixel...\n");
     leds_init_neopixel();
-
-    printf("Inicializando buzzer...\n");
+    buttons_init();
     pwm_init_buzzer(BUZZER_PIN);
 
-    printf("Sistema inicializado com sucesso!\n");
-    printf("Aguardando dados do sensor...\n\n");
-
+    // Variáveis para leitura do MPU
     int16_t ax, ay, az;
     float angle;
     uint angle_servo;
 
-    mpu6050_read_raw(&last_ax, &last_ay, &last_az);
-    last_movement_time = to_ms_since_boot(get_absolute_time());
+    // Variáveis para controle de tempo
+    uint64_t last_button_check = 0;
+    uint64_t last_display_update = 0;
 
-    uint64_t last_print_time = 0;
-    int print_count = 0;
+    // Estado inicial dos LEDs (ligados)
+    update_leds_by_angle(0, false);
 
     while (true)
     {
         uint64_t current_time = to_ms_since_boot(get_absolute_time());
 
+        // Leitura do MPU6050
         mpu6050_read_raw(&ax, &ay, &az);
         angle = mpu6050_get_inclination(ax, ay, az);
 
-        bool movement_detected = check_movement(ax, ay, az);
-        if (movement_detected)
-        {
-            last_movement_time = current_time;
-            last_ax = ax;
-            last_ay = ay;
-            last_az = az;
-        }
-
-        bool is_stable = (current_time - last_movement_time > STABLE_TIME_MS);
-        bool alarm_triggered = (fabs(angle) > ANGLE_ALERT_THRESHOLD);
-
-        // Controle do Servo
+        // Controle do servo
         angle_servo = (uint)((angle + 90.0f) * (SERVO_MAX_ANGLE - SERVO_MIN_ANGLE) / 180.0f);
         if (angle_servo > SERVO_MAX_ANGLE)
             angle_servo = SERVO_MAX_ANGLE;
         servo_set_angle(angle_servo);
 
-        // Controle dos LEDs
-        update_neopixel_state(alarm_triggered, movement_detected, is_stable, current_time);
-
-        // Atualização do display
-        char main_buffer[32];
-        snprintf(main_buffer, sizeof(main_buffer), "ANG: %.1f", angle);
-        display_text(main_buffer, 0, 24, 2);
-        update_display_state(angle, alarm_triggered, is_stable, movement_detected);
-
-        // Alarme sonoro
-        if (alarm_triggered)
+        // Verificação dos botões (a cada 20ms)
+        if (current_time - last_button_check > 20)
         {
-            beep(BUZZER_PIN, 100);
+            // Verifica botão A (Desliga LEDs)
+            if (check_button_press(&button_a_state, is_button_a_pressed()))
+            {
+                printf("Botão A pressionado - Desligando LEDs\n");
+                leds_enabled = false;
+                clear_neopixel();
+                display_text_no_clear("LEDs: OFF  ", 0, 0, 1);
+            }
+
+            // Verifica botão B (Liga LEDs)
+            if (check_button_press(&button_b_state, is_button_b_pressed()))
+            {
+                printf("Botão B pressionado - Ligando LEDs\n");
+                leds_enabled = true;
+                update_leds_by_angle(angle, fabs(angle) > ANGLE_ALERT_THRESHOLD);
+                display_text_no_clear("LEDs:ON", 0, 0, 1);
+            }
+
+            last_button_check = current_time;
         }
 
-        show_display();
-
-        // Imprimir no terminal a cada 500ms
-        if (current_time - last_print_time > 500)
+        // Atualização dos LEDs baseada no ângulo (a cada 100ms)
+        if (leds_enabled)
         {
-            print_count++;
-            printf("[%d] A-X: %6d | A-Y: %6d | A-Z: %6d | Angulo: %7.2f° | Mov: %s | Alarme: %s\n",
-                   print_count, ax, ay, az, angle,
-                   movement_detected ? "SIM" : "NAO",
-                   alarm_triggered ? "SIM" : "NAO");
-            last_print_time = current_time;
+            bool alarm_triggered = (fabs(angle) > ANGLE_ALERT_THRESHOLD);
+            update_leds_by_angle(angle, alarm_triggered);
         }
 
-        sleep_ms(50);
+        // Atualização do display (a cada 500ms)
+        if (current_time - last_display_update > 500)
+        {
+            // Limpa área principal do display
+            display_text_no_clear("                ", 0, 20, 2);
+
+            // Mostra ângulo
+            char buffer[32];
+            snprintf(buffer, sizeof(buffer), "Angulo: %.1f", angle);
+            display_text_no_clear(buffer, 0, 24, 2);
+
+            // Mostra estado dos LEDs
+            if (leds_enabled)
+            {
+                display_text_no_clear("LEDs: ON", 0, 0, 1);
+            }
+            else
+            {
+                display_text_no_clear("LEDs: OFF  ", 0, 0, 1);
+            }
+
+            // Mostra alarme se necessário
+            if (fabs(angle) > ANGLE_ALERT_THRESHOLD)
+            {
+                display_text_no_clear("ALERTA ", 0, 40, 1);
+                beep(BUZZER_PIN, 200);
+            }
+            else
+            {
+                display_text_no_clear("Sistema OK  ", 0, 40, 1);
+            }
+
+            show_display();
+            last_display_update = current_time;
+
+            // Log no terminal
+            printf("A-X: %d | A-Y: %d | A-Z: %d | Angulo: %.2f° | LEDs: %s\n",
+                   ax, ay, az, angle, leds_enabled ? "LIGADO" : "DESLIGADO");
+        }
+
+        // Pequena pausa para não sobrecarregar
+        sleep_ms(10);
     }
+
+    return 0;
 }
